@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slingshot Boulder Destroyer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #87CEEB 0%, #98FB98 50%, #F0E68C 100%);
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .game-container {
+            position: relative;
+            border: 3px solid #8B4513;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            background: linear-gradient(180deg, #87CEEB 0%, #98FB98 100%);
+        }
+
+        canvas {
+            display: block;
+            border-radius: 12px;
+            cursor: crosshair;
+        }
+
+        .ui-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #333;
+            font-weight: bold;
+            font-size: 18px;
+            text-shadow: 2px 2px 4px rgba(255,255,255,0.8);
+            z-index: 10;
+        }
+
+        .instructions {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #333;
+            font-size: 14px;
+            text-align: center;
+            text-shadow: 1px 1px 2px rgba(255,255,255,0.8);
+        }
+
+        .reset-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: linear-gradient(45deg, #FF6B6B, #FF8E53);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(255,107,107,0.4);
+            transition: all 0.3s ease;
+        }
+
+        .reset-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(255,107,107,0.6);
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <canvas id="gameCanvas" width="1000" height="600"></canvas>
+        <div class="ui-overlay">
+            <div>Score: <span id="score">0</span></div>
+            <div>Blocks Left: <span id="blocksLeft">0</span></div>
+        </div>
+        <button class="reset-btn" onclick="resetGame()">Reset Game</button>
+        <div class="instructions">
+            Click and drag to aim the slingshot • Release to fire • Destroy all blocks to win!
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Game state
+        let gameState = {
+            score: 0,
+            blocks: [],
+            boulder: null,
+            slingshot: { x: 100, y: 300, stretched: false, stretchX: 0, stretchY: 0 },
+            particles: [],
+            isDragging: false,
+            dragStart: { x: 0, y: 0 },
+            gravity: 0.3,
+            friction: 0.98,
+            grassPattern: [] // Static grass pattern
+        };
+
+        // Block class
+        class Block {
+            constructor(x, y, width, height, color) {
+                this.x = x;
+                this.y = y;
+                this.width = width;  
+                this.height = height;
+                this.color = color;
+                this.destroyed = false;
+                this.health = 1;
+                this.rotation = 0;
+                this.vx = 0;
+                this.vy = 0;
+                this.onGround = false;
+                this.mass = 1;
+            }
+
+            draw() {
+                if (this.destroyed) return;
+                
+                ctx.save();
+                ctx.translate(this.x + this.width/2, this.y + this.height/2);
+                ctx.rotate(this.rotation);
+                
+                // Block shadow
+                ctx.fillStyle = 'rgba(0,0,0,0.2)';
+                ctx.fillRect(-this.width/2 + 2, -this.height/2 + 2, this.width, this.height);
+                
+                // Main block
+                const gradient = ctx.createLinearGradient(-this.width/2, -this.height/2, this.width/2, this.height/2);
+                gradient.addColorStop(0, this.color);
+                gradient.addColorStop(1, this.darkenColor(this.color));
+                ctx.fillStyle = gradient;
+                ctx.fillRect(-this.width/2, -this.height/2, this.width, this.height);
+                
+                // Block border
+                ctx.strokeStyle = this.darkenColor(this.color);
+                ctx.lineWidth = 2;
+                ctx.strokeRect(-this.width/2, -this.height/2, this.width, this.height);
+                
+                ctx.restore();
+            }
+
+            darkenColor(color) {
+                const colors = {
+                    '#FF6B6B': '#E55555',
+                    '#4ECDC4': '#3BB3AC',
+                    '#45B7D1': '#3A9BC1',
+                    '#96CEB4': '#86BE9A',
+                    '#FFEAA7': '#F4D03F'
+                };
+                return colors[color] || '#666666';
+            }
+
+            update() {
+                if (this.destroyed) return;
+                
+                // Apply physics
+                this.vy += 0.5; // gravity
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                this.rotation += this.vx * 0.02;
+                this.onGround = false;
+
+                // Ground collision
+                if (this.y + this.height > canvas.height - 50) {
+                    this.y = canvas.height - 50 - this.height;
+                    this.vy *= -0.4;
+                    this.vx *= 0.85;
+                    this.onGround = true;
+                    
+                    // Stop small movements
+                    if (Math.abs(this.vy) < 1) this.vy = 0;
+                    if (Math.abs(this.vx) < 0.5) this.vx *= 0.9;
+                }
+
+                // Side walls collision
+                if (this.x < 0) {
+                    this.x = 0;
+                    this.vx *= -0.5;
+                } else if (this.x + this.width > canvas.width) {
+                    this.x = canvas.width - this.width;
+                    this.vx *= -0.5;
+                }
+
+                // Check collision with other blocks
+                gameState.blocks.forEach(otherBlock => {
+                    if (otherBlock !== this && !otherBlock.destroyed && this.collidesWith(otherBlock)) {
+                        this.resolveCollision(otherBlock);
+                    }
+                });
+
+                // Air friction
+                this.vx *= 0.995;
+                this.vy *= 0.998;
+            }
+
+            collidesWith(other) {
+                return this.x < other.x + other.width &&
+                       this.x + this.width > other.x &&
+                       this.y < other.y + other.height &&
+                       this.y + this.height > other.y;
+            }
+
+            resolveCollision(other) {
+                // Calculate overlap
+                const overlapX = Math.min(this.x + this.width - other.x, other.x + other.width - this.x);
+                const overlapY = Math.min(this.y + this.height - other.y, other.y + other.height - this.y);
+
+                // Separate blocks
+                if (overlapX < overlapY) {
+                    // Horizontal collision
+                    const direction = this.x < other.x ? -1 : 1;
+                    this.x += direction * overlapX * 0.5;
+                    other.x -= direction * overlapX * 0.5;
+                    
+                    // Exchange velocities with some dampening
+                    const tempVx = this.vx;
+                    this.vx = other.vx * 0.8;
+                    other.vx = tempVx * 0.8;
+                } else {
+                    // Vertical collision
+                    const direction = this.y < other.y ? -1 : 1;
+                    this.y += direction * overlapY * 0.5;
+                    other.y -= direction * overlapY * 0.5;
+                    
+                    // Exchange velocities with some dampening
+                    const tempVy = this.vy;
+                    this.vy = other.vy * 0.8;
+                    other.vy = tempVy * 0.8;
+                }
+            }
+
+            takeDamage() {
+                this.health--;
+                if (this.health <= 0) {
+                    this.destroy();
+                    return true;
+                }
+                return false;
+            }
+
+            destroy() {
+                this.destroyed = true;
+                this.createParticles();
+                gameState.score += 10;
+                updateScore();
+            }
+
+            createParticles() {
+                for (let i = 0; i < 8; i++) {
+                    gameState.particles.push(new Particle(
+                        this.x + this.width/2,
+                        this.y + this.height/2,
+                        this.color
+                    ));
+                }
+            }
+        }
+
+        // Boulder class
+        class Boulder {
+            constructor(x, y, vx, vy) {
+                this.x = x;
+                this.y = y;
+                this.vx = vx;
+                this.vy = vy;
+                this.radius = 15;
+                this.trail = [];
+            }
+
+            draw() {
+                // Trail
+                ctx.strokeStyle = 'rgba(139, 69, 19, 0.3)';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                for (let i = 1; i < this.trail.length; i++) {
+                    const alpha = i / this.trail.length;
+                    ctx.globalAlpha = alpha * 0.5;
+                    if (i === 1) {
+                        ctx.moveTo(this.trail[i].x, this.trail[i].y);
+                    } else {
+                        ctx.lineTo(this.trail[i].x, this.trail[i].y);
+                    }
+                }
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+
+                // Boulder shadow
+                ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                ctx.beginPath();
+                ctx.ellipse(this.x + 3, this.y + 3, this.radius, this.radius * 0.6, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Boulder
+                const gradient = ctx.createRadialGradient(
+                    this.x - 5, this.y - 5, 0,
+                    this.x, this.y, this.radius
+                );
+                gradient.addColorStop(0, '#D2691E');
+                gradient.addColorStop(0.7, '#8B4513');
+                gradient.addColorStop(1, '#654321');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Boulder texture
+                ctx.fillStyle = 'rgba(160, 82, 45, 0.8)';
+                ctx.beginPath();
+                ctx.arc(this.x - 3, this.y - 3, 3, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(this.x + 2, this.y + 2, 2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            update() {
+                this.trail.push({ x: this.x, y: this.y });
+                if (this.trail.length > 10) {
+                    this.trail.shift();
+                }
+
+                this.x += this.vx;
+                this.y += this.vy;
+                this.vy += gameState.gravity;
+                this.vx *= gameState.friction;
+
+                // Check collision with blocks
+                gameState.blocks.forEach(block => {
+                    if (!block.destroyed && this.collidesWith(block)) {
+                        if (block.takeDamage()) {
+                            // Apply realistic force to block based on boulder momentum
+                            const force = 0.6;
+                            block.vx = this.vx * force + (Math.random() - 0.5) * 2;
+                            block.vy = this.vy * force - Math.random() * 3 - 2;
+                        }
+                        
+                        // Boulder bounces but with less energy loss
+                        const bounceForce = 0.6;
+                        this.vx *= -bounceForce + (Math.random() - 0.5) * 0.2;
+                        this.vy *= -bounceForce + (Math.random() - 0.5) * 0.2;
+                    }
+                });
+
+                // Ground collision
+                if (this.y + this.radius > canvas.height - 50) {
+                    this.y = canvas.height - 50 - this.radius;
+                    this.vy *= -0.6;
+                    this.vx *= 0.8;
+                }
+
+                // Wall collisions
+                if (this.x - this.radius < 0 || this.x + this.radius > canvas.width) {
+                    this.vx *= -0.8;
+                    this.x = Math.max(this.radius, Math.min(canvas.width - this.radius, this.x));
+                }
+            }
+
+            collidesWith(block) {
+                const closestX = Math.max(block.x, Math.min(this.x, block.x + block.width));
+                const closestY = Math.max(block.y, Math.min(this.y, block.y + block.height));
+                const distanceX = this.x - closestX;
+                const distanceY = this.y - closestY;
+                return (distanceX * distanceX + distanceY * distanceY) < (this.radius * this.radius);
+            }
+        }
+
+        // Particle class for destruction effects
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 8;
+                this.vy = (Math.random() - 0.5) * 8 - 2;
+                this.color = color;
+                this.life = 1;
+                this.decay = 0.02;
+                this.size = Math.random() * 4 + 2;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.vy += 0.3;
+                this.life -= this.decay;
+                this.vx *= 0.98;
+            }
+
+            draw() {
+                if (this.life <= 0) return;
+                
+                ctx.globalAlpha = this.life;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size * this.life, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        // Initialize game
+        function initGame() {
+            gameState.blocks = [];
+            gameState.particles = [];
+            gameState.boulder = null;
+            gameState.score = 0;
+            
+            // Create static grass pattern
+            gameState.grassPattern = [];
+            for (let i = 0; i < canvas.width; i += 5) {
+                gameState.grassPattern.push({
+                    x: i,
+                    y: canvas.height - 50,
+                    width: 2,
+                    height: Math.random() * 8 + 2
+                });
+            }
+            
+            // Create block structure (pyramid)
+            const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7'];
+            const startX = 650;
+            const startY = 400;
+            const blockWidth = 60;
+            const blockHeight = 30;
+            
+            // Build pyramid with less stability
+            for (let row = 0; row < 5; row++) {
+                for (let col = 0; col < (5 - row); col++) {
+                    const block = new Block(
+                        startX + col * (blockWidth + 2) + row * (blockWidth/2),
+                        startY - row * (blockHeight + 1),
+                        blockWidth - 2,
+                        blockHeight - 2,
+                        colors[row % colors.length]
+                    );
+                    
+                    // Add slight random offset for more realistic stacking
+                    block.x += (Math.random() - 0.5) * 2;
+                    block.y += (Math.random() - 0.5) * 1;
+                    
+                    gameState.blocks.push(block);
+                }
+            }
+            
+            updateScore();
+        }
+
+        // Draw slingshot
+        function drawSlingshot() {
+            const { x, y, stretched, stretchX, stretchY } = gameState.slingshot;
+            
+            // Slingshot base
+            ctx.fillStyle = '#8B4513';
+            ctx.fillRect(x - 10, y + 30, 20, 40);
+            
+            // Slingshot arms
+            ctx.strokeStyle = '#654321';
+            ctx.lineWidth = 8;
+            ctx.lineCap = 'round';
+            
+            ctx.beginPath();
+            ctx.moveTo(x - 8, y - 30);
+            if (stretched) {
+                ctx.quadraticCurveTo(stretchX - 20, stretchY, stretchX, stretchY);
+            } else {
+                ctx.lineTo(x - 8, y + 30);
+            }
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.moveTo(x + 8, y - 30);
+            if (stretched) {
+                ctx.quadraticCurveTo(stretchX + 20, stretchY, stretchX, stretchY);
+            } else {
+                ctx.lineTo(x + 8, y + 30);
+            }
+            ctx.stroke();
+            
+            // Stretched rubber band and boulder
+            if (stretched) {
+                ctx.strokeStyle = 'rgba(139, 69, 19, 0.8)';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(x - 8, y - 30);
+                ctx.lineTo(stretchX, stretchY);
+                ctx.lineTo(x + 8, y - 30);
+                ctx.stroke();
+                
+                // Boulder in slingshot
+                const gradient = ctx.createRadialGradient(
+                    stretchX - 3, stretchY - 3, 0,
+                    stretchX, stretchY, 12
+                );
+                gradient.addColorStop(0, '#D2691E');
+                gradient.addColorStop(1, '#8B4513');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(stretchX, stretchY, 12, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Draw ground
+        function drawGround() {
+            const gradient = ctx.createLinearGradient(0, canvas.height - 50, 0, canvas.height);
+            gradient.addColorStop(0, '#228B22');
+            gradient.addColorStop(1, '#006400');
+            
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
+            
+            // Static grass texture
+            ctx.fillStyle = '#32CD32';
+            gameState.grassPattern.forEach(grass => {
+                ctx.fillRect(grass.x, grass.y, grass.width, grass.height);
+            });
+        }
+
+        // Update score display
+        function updateScore() {
+            document.getElementById('score').textContent = gameState.score;
+            const blocksLeft = gameState.blocks.filter(block => !block.destroyed).length;
+            document.getElementById('blocksLeft').textContent = blocksLeft;
+            
+            if (blocksLeft === 0) {
+                setTimeout(() => {
+                    alert(`Congratulations! You destroyed all blocks! Final Score: ${gameState.score}`);
+                }, 1000);
+            }
+        }
+
+        // Game loop
+        function gameLoop() {
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw ground
+            drawGround();
+            
+            // Update and draw blocks
+            gameState.blocks.forEach(block => {
+                block.update();
+                block.draw();
+            });
+            
+            // Update and draw boulder
+            if (gameState.boulder) {
+                gameState.boulder.update();
+                gameState.boulder.draw();
+                
+                // Remove boulder if it's off screen or moving very slowly
+                if (gameState.boulder.x > canvas.width + 100 || 
+                    gameState.boulder.y > canvas.height + 100 || 
+                    (Math.abs(gameState.boulder.vx) < 0.5 && Math.abs(gameState.boulder.vy) < 0.5 && gameState.boulder.y > canvas.height - 100)) {
+                    gameState.boulder = null;
+                }
+            }
+            
+            // Update and draw particles
+            gameState.particles = gameState.particles.filter(particle => {
+                particle.update();
+                particle.draw();
+                return particle.life > 0;
+            });
+            
+            // Draw slingshot
+            drawSlingshot();
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Mouse event handlers
+        canvas.addEventListener('mousedown', (e) => {
+            if (gameState.boulder) return; // Can't shoot while boulder is active
+            
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            // Check if clicking near slingshot
+            const distance = Math.sqrt(
+                Math.pow(mouseX - gameState.slingshot.x, 2) + 
+                Math.pow(mouseY - gameState.slingshot.y, 2)
+            );
+            
+            if (distance < 80) {
+                gameState.isDragging = true;
+                gameState.dragStart = { x: mouseX, y: mouseY };
+                gameState.slingshot.stretched = true;
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!gameState.isDragging) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            // Limit stretch distance
+            const maxStretch = 120; // Increased from 80
+            const deltaX = mouseX - gameState.slingshot.x;
+            const deltaY = mouseY - gameState.slingshot.y;
+            const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+            
+            if (distance > maxStretch) {
+                const ratio = maxStretch / distance;
+                gameState.slingshot.stretchX = gameState.slingshot.x + deltaX * ratio;
+                gameState.slingshot.stretchY = gameState.slingshot.y + deltaY * ratio;
+            } else {
+                gameState.slingshot.stretchX = mouseX;
+                gameState.slingshot.stretchY = mouseY;
+            }
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (!gameState.isDragging) return;
+            
+            // Calculate launch velocity with much higher power
+            const power = 0.4; // Increased from 0.15
+            const vx = (gameState.slingshot.x - gameState.slingshot.stretchX) * power;
+            const vy = (gameState.slingshot.y - gameState.slingshot.stretchY) * power;
+            
+            // Create boulder
+            gameState.boulder = new Boulder(
+                gameState.slingshot.stretchX,
+                gameState.slingshot.stretchY,
+                vx,
+                vy
+            );
+            
+            // Reset slingshot
+            gameState.isDragging = false;
+            gameState.slingshot.stretched = false;
+        });
+
+        // Reset game function
+        function resetGame() {
+            initGame();
+        }
+
+        // Start the game
+        initGame();
+        gameLoop();
+    </script>
+</body>
+</html>
